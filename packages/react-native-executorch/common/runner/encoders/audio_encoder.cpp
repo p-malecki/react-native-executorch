@@ -21,12 +21,7 @@ using ::executorch::runtime::EValue;
 using ::executorch::runtime::Result;
 
 namespace {
-// Matches AUDIO_SAMPLES_PER_BLOCK in gemma_export/experiments_vulkan/
-// op_bisect/iter201_mm_4method_dynaudio_prefill2048_export.py.
-// The PTE's audio_samples dim was exported as `7680 * audio_blocks`.
 constexpr int32_t kSamplesPerBlock = 7680;
-// k ∈ [kAudioBlockKMin, kAudioBlockKMax] from MODEL_INTERFACE.md §6.
-// k=62 == 29.76 s @ 16 kHz is the SDPA mask + rel-shift bake point.
 constexpr int64_t kAudioBlockKMin = 1;
 constexpr int64_t kAudioBlockKMax = 62;
 } // namespace

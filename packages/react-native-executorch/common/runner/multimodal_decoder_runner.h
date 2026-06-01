@@ -35,9 +35,6 @@ public:
                                    const GenerationConfig &config)
       : TextDecoderRunner(module, io_manager, config) {}
 
-  // True iff the loaded PTE uses the Gemma-style PLE contract above.
-  // Reads the kHasPLE constant_method every call; cheap, but callers in
-  // hot loops should snapshot into a local.
   bool has_ple() const {
     auto r = module_->get(kHasPLE);
     if (r.error() != ::executorch::runtime::Error::Ok) {

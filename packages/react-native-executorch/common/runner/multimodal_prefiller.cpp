@@ -8,13 +8,6 @@
 
 // Ported from executorch/extension/llm/runner/multimodal_prefiller.cpp
 // with our token-embedding padding fix and LFM2-VL adaptations.
-//
-// Supports two PTE shapes, selected from MultimodalDecoderRunner::has_ple()
-// (auto-detected at load time):
-//   * Legacy  : token_embedding -> inputs_embeds;
-//               text_decoder(inputs_embeds, cache_positions).
-//   * PLE     : token_embedding -> (inputs_embeds, ple_tok);
-//               text_decoder(inputs_embeds, ple_tok, cache_positions).
 
 #include "multimodal_prefiller.h"
 #include "constants.h"
@@ -49,17 +42,8 @@ MultimodalPrefiller::prefill(const std::vector<MultimodalInput> &inputs,
                            "prefill: empty input list");
 
   // ------------------------------------------------------------
-  // Capacity & shape policy from PTE metadata.
-  //
-  // Three knobs drive prefill:
-  //   * get_max_seq_len     — text_decoder S cap. In dynamic-shape PTEs this
-  //                           is the per-call chunk size (Gemma4 iter201 =
-  //                           128); in static-shape PTEs (LFM2-VL) it is also
-  //                           the single-shot prefill cap.
-  //   * get_max_context_len — total KV budget (Gemma4 iter201 = 2048). Only
-  //                           materially used by the dynamic-shape path.
-  //   * enable_dynamic_shape — selects between chunked (true) and single-shot
-  //                            padded (false) prefill.
+  //   * get_max_seq_len     — text_decoder S cap. Max prefill chunk length (<=get_max_conetxt_len)
+  //   * get_max_context_len — total KV budget. Caps max context length for multi-turn conversation.
   // ------------------------------------------------------------
   int64_t max_seq_len = -1;
   {
@@ -92,12 +76,9 @@ MultimodalPrefiller::prefill(const std::vector<MultimodalInput> &inputs,
   // ------------------------------------------------------------
   // Pass 1: build a fused input_ids buffer spanning all inputs.
   //
-  // Mirrors gemma_export/experiments/infer_image.py::prefill_single_shot:
-  //   llm_ids = prefix_ids + [0] * num_soft + suffix_ids
-  // Image positions use pad_token_id=0, matching HF modeling_gemma4.py:2190
-  // (placeholder_id is rewritten to 0 before PLE lookup). The decoder embeds
-  // at those positions are then overwritten with the vision encoder output
-  // in pass 2.
+  // Image positions use pad_token_id (placeholder_id is rewritten to 0 before PLE lookup).
+  // The decoder embeds at those positions are then
+  // overwritten with the vision encoder output in pass 2.
   // ------------------------------------------------------------
   struct ImageSlot {
     const MultimodalInput *input; // non-owning, valid for duration of call
@@ -112,12 +93,7 @@ MultimodalPrefiller::prefill(const std::vector<MultimodalInput> &inputs,
   // just a TensorImpl*; `Method::get_output(i)` returns `const EValue&` to
   // Method-internal storage and Module::execute copies that EValue into the
   // returned vector. The copy shares the underlying TensorImpl, so a later
-  // execute() on the same method — a second audio input in this prefill,
-  // a Vulkan backend output-buffer reuse across methods, or a load-time
-  // warm-up — mutates `sizes()` in place under our feet. The original error
-  // ("audio encoder returned 96 tokens, expected 60") is exactly this:
-  // slot.num_audio was captured from the FIRST encode, slot.encoded.size(1)
-  // reflected the SECOND. Mirrors main_mm.cpp:604-675's copy-on-encode.
+  // execute() on the same method — a second audio input in this prefill would overwrite.
   struct AudioSlot {
     std::vector<uint8_t> bytes;
     ::executorch::aten::ScalarType dtype;
@@ -171,23 +147,22 @@ MultimodalPrefiller::prefill(const std::vector<MultimodalInput> &inputs,
           AudioSlot{std::move(bytes), audio_tensor.scalar_type(),
                     static_cast<int64_t>(ids.size()), num_audio, audio_hidden});
       ids.insert(ids.end(), static_cast<size_t>(num_audio), 0);
-    } else if (input.is_text() || input.is_tokens()) {
-      std::vector<uint64_t> tokens;
-      if (input.is_text()) {
-        auto encode_result = tokenizer_->encode(input.get_text());
-        if (!encode_result.ok()) {
-          ET_LOG(Error, "Tokenizer encode error %d",
-                 static_cast<uint32_t>(encode_result.error()));
-          return Error::InvalidArgument;
-        }
-        tokens = std::move(*encode_result);
-      } else {
-        tokens = input.get_tokens();
+    } else if (input.is_text()) {
+      auto encode_result = tokenizer_->encode(input.get_text());
+      if (!encode_result.ok()) {
+        ET_LOG(Error, "Tokenizer encode error %d",
+                static_cast<uint32_t>(encode_result.error()));
+        return Error::InvalidArgument;
       }
+      std::vector<uint64_t> tokens = std::move(*encode_result);
       for (auto t : tokens) {
         ids.push_back(static_cast<int64_t>(t));
       }
-    } else {
+    } else if (input.is_tokens()) {
+      std::vector<uint64_t> tokens = input.get_tokens();
+      for (auto t : tokens) {
+        ids.push_back(static_cast<int64_t>(t));
+      }
       ET_LOG(Error, "Unsupported MultimodalInput type");
       return Error::NotSupported;
     }
@@ -383,12 +358,12 @@ MultimodalPrefiller::prefill(const std::vector<MultimodalInput> &inputs,
   // ------------------------------------------------------------
   // Chunked text_decoder calls.
   //
-  // Some PTEs (Gemma4 iter201) hard-cap text_decoder's S dim at
+  // Some PTEs (Gemma4) hard-cap text_decoder's S dim at
   // get_max_seq_len (128) while the prefill budget extends to
   // get_max_context_len (2048). KV cache state persists across calls via the
   // absolute input_pos vector, so chunking is functionally transparent to
-  // the model. For single-shot static-shape PTEs (LFM2-VL) chunk_cap ==
-  // total_len so the loop iterates exactly once — preserving prior behavior.
+  // the model. For single-shot PTEs chunk_cap == total_len
+  // so the loop iterates exactly once — preserving prior behavior.
   // ------------------------------------------------------------
   const int64_t chunk_cap =
       decoder_chunk_size > 0 ? decoder_chunk_size : total_len;

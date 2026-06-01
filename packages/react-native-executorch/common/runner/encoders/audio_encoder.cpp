@@ -2,7 +2,6 @@
 #include "audio_encoder.h"
 
 #include <rnexecutorch/Error.h>
-#include <rnexecutorch/Log.h>
 #include <runner/constants.h>
 
 #include <executorch/extension/tensor/tensor.h>
@@ -111,10 +110,6 @@ Result<EValue> AudioEncoder::encode(const MultimodalInput &input) {
                            "audio_encoder output rank=%zd, expected 3",
                            audio_tensor.dim());
   last_token_count_ = static_cast<int32_t>(audio_tensor.size(1));
-  rnexecutorch::log(rnexecutorch::LOG_LEVEL::Info,
-                    "AudioEncoder: valid_samples=", n_valid,
-                    " padded_samples=", n_padded, " k_blocks=", k_blocks,
-                    " audio_tokens=", last_token_count_);
   return exec_result[0];
 }
 

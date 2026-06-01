@@ -16,14 +16,9 @@ TextRunner::TextRunner(std::unique_ptr<Module> module,
     : BaseLLMRunner(std::move(module), tokenizer_path, config) {}
 
 bool TextRunner::is_loaded() const {
-#ifdef RNEX_BYPASS_TOKENIZER
-  return module_ && module_->is_loaded() && text_decoder_runner_ &&
-         text_prefiller_ && text_token_generator_;
-#else
   return module_ && module_->is_loaded() && tokenizer_ &&
          tokenizer_->is_loaded() && text_decoder_runner_ && text_prefiller_ &&
          text_token_generator_;
-#endif
 }
 
 Error TextRunner::load_subcomponents() {

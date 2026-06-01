@@ -53,7 +53,7 @@ TextDecoderRunner::step(TensorPtr &tokens, int64_t start_pos) {
     auto inputs_res = io_manager_->prepare_decode(tokens, start_pos_tensor);
     ET_CHECK_OK_OR_RETURN_ERROR(inputs_res.error());
     inputs = inputs_res.get();
-    auto outputs_res = module_->execute("forward", inputs);
+    auto outputs_res = module_->forward(inputs);
     ET_CHECK_OK_OR_RETURN_ERROR(outputs_res.error());
 
     auto update_err = io_manager_->update_decode(outputs_res.get());

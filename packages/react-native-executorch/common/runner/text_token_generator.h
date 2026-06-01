@@ -16,7 +16,6 @@
 #include <executorch/extension/tensor/tensor.h>
 #include <pytorch/tokenizers/hf_tokenizer.h>
 #include <rnexecutorch/Error.h>
-#include <rnexecutorch/Log.h>
 
 namespace executorch {
 namespace extension {
@@ -108,8 +107,6 @@ public:
       pos++;
       generated_tokens.push_back(cur_token);
 
-      const bool eos_reached_now = eos_ids_->find(cur_token) != eos_ids_->end();
-
       if (use_kv_cache_) {
         // update the token tensor. token_data will not be empty.
         // NOLINTNEXTLINE(facebook-hte-LocalUncheckedArrayBounds)
@@ -119,22 +116,6 @@ public:
         token_data.push_back(cur_token);
         ET_CHECK_OK_OR_RETURN_ERROR(resize_tensor_ptr(
             tokens_managed, {1, static_cast<int>(token_data.size())}));
-      }
-
-      // Don't include the terminal EOS/EOT token in the streamed text — it
-      // would otherwise be appended to the assistant message stored in chat
-      // history and corrupt the next turn's chat-template rendering
-      // (e.g. duplicated <end_of_turn>).
-      if (eos_reached_now) {
-        if (!token_cache.empty()) {
-          auto flush = tokenizer_->decode(token_cache, false);
-          if (flush.ok() && !flush.get().empty() &&
-              !flush.get().ends_with("�") && token_callback) {
-            token_callback(flush.get());
-          }
-          token_cache.clear();
-        }
-        break;
       }
 
       token_cache.push_back(static_cast<uint64_t>(cur_token));
@@ -161,13 +142,19 @@ public:
       const auto eos_reached = eos_ids_->contains(cur_token);
 
       if (!cache_decoded.ends_with("�") &&
-          (countIntervalElapsed || timeIntervalElapsed || should_stop_)) {
+          (countIntervalElapsed || timeIntervalElapsed || should_stop_ || eos_reached)) {
         token_callback(cache_decoded);
         token_cache.clear();
         timestamp_ = std::chrono::high_resolution_clock::now();
       }
 
       if (should_stop_) {
+        break;
+      }
+      // data-dependent terminating condition: we have n_eos_ number of EOS
+      if (eos_ids_->find(cur_token) != eos_ids_->end()) {
+        printf("\n");
+        ET_LOG(Info, "\nReached to the end of generation");
         break;
       }
     }
